@@ -2,6 +2,10 @@
 <html lang="tr">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0d6efd">
+  <link rel="manifest" href="/static/manifest.json">
+  <link rel="icon" href="/static/icon-192.png">
   <title>WALA Chat</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <script src="https://cdn.socket.io/4.0.0/socket.io.min.js"></script>
@@ -14,32 +18,106 @@
 
   <div id="messages" class="border p-3 mb-3" style="height: 300px; overflow-y: scroll;">
     {% for msg in messages %}
-      <p><strong>{{ msg.user }}:</strong> {{ msg.text }}</p>
+      <p data-id="{{ msg.id }}"><strong>{{ msg.username }}:</strong> {{ msg.content }} {% if msg.is_read %}✔️{% endif %}
+      {% if msg.file_url %}
+        {% if msg.file_type and msg.file_type.startswith('image/') %}
+          <br><img src="{{ msg.file_url }}" alt="{{ msg.file_name }}" style="max-width:200px;">
+        {% else %}
+          <br><a href="{{ msg.file_url }}" download="{{ msg.file_name }}">{{ msg.file_name }}</a>
+        {% endif %}
+      {% endif %}
+      </p>
     {% endfor %}
   </div>
 
-  <form id="form" class="d-flex">
+  <form id="form" class="d-flex" enctype="multipart/form-data">
     <input id="message" class="form-control me-2" placeholder="Mesaj yaz..." autocomplete="off">
+    <input id="file" type="file" class="form-control me-2" style="max-width:200px;">
     <button class="btn btn-primary">Gönder</button>
   </form>
 
   <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/static/serviceWorker.js');
+    }
     const socket = io();
     const form = document.getElementById('form');
     const input = document.getElementById('message');
     const messages = document.getElementById('messages');
 
-    socket.on('message', function(data) {
-      const p = document.createElement('p');
-      p.innerHTML = `<strong>${data.user}:</strong> ${data.text}`;
-      messages.appendChild(p);
+    // Mesaj okundu bildirimi
+    function markMessagesRead() {
+      document.querySelectorAll('#messages p').forEach(p => {
+        const id = p.getAttribute('data-id');
+        if (id && !p.innerHTML.includes('✔️')) {
+          socket.emit('read_message', { message_id: id });
+        }
+      });
+    }
+    messages.addEventListener('scroll', markMessagesRead);
+    window.addEventListener('focus', markMessagesRead);
+    markMessagesRead();
+
+    socket.on('message_read', function(data) {
+      const p = document.querySelector(`#messages p[data-id='${data.message_id}']`);
+      if (p && !p.innerHTML.includes('✔️')) {
+        p.innerHTML += ' ✔️';
+      }
     });
 
+    // Oda desteği için room_id'yi socket.emit'e ekle
+    var roomId = null;
+    {% if room is defined and room is not none %}
+      roomId = {{ room.id|tojson }};
+    {% endif %}
     form.addEventListener('submit', function(e) {
       e.preventDefault();
-      if (input.value) {
-        socket.send(input.value);
-        input.value = '';
+      const text = input.value;
+      const fileInput = document.getElementById('file');
+      const file = fileInput.files[0];
+      if (!text && !file) return;
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = function(evt) {
+          socket.emit('send_message', {
+            username: '{{ username }}',
+            message: text,
+            file: {
+              name: file.name,
+              type: file.type,
+              data: evt.target.result
+            },
+            room_id: roomId
+          });
+        };
+        reader.readAsDataURL(file);
+      } else {
+        socket.emit('send_message', {
+          username: '{{ username }}',
+          message: text,
+          room_id: roomId
+        });
+      }
+      input.value = '';
+      fileInput.value = '';
+    });
+
+    socket.on('receive_message', function(data) {
+      const p = document.createElement('p');
+      p.setAttribute('data-id', data.id);
+      let readMark = data.is_read ? ' ✔️' : '';
+      let fileHtml = '';
+      if (data.file) {
+        if (data.file.type && data.file.type.startsWith('image/')) {
+          fileHtml = `<br><img src='${data.file.url}' alt='${data.file.name}' style='max-width:200px;'>`;
+        } else {
+          fileHtml = `<br><a href='${data.file.url}' download='${data.file.name}'>${data.file.name}</a>`;
+        }
+      }
+      p.innerHTML = `<strong>${data.username}:</strong> ${data.message || ''}${fileHtml}${readMark}`;
+      messages.appendChild(p);
+      if (!readMark) {
+        socket.emit('read_message', { message_id: data.id });
       }
     });
   </script>
